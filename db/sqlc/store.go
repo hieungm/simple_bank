@@ -1,41 +1,96 @@
 package db
 
-// import (
-// 	"context"
-// 	"database/sql"
-// 	"fmt"
-// )
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
 
-// type Store struct {
-// 	*Queries
-// 	db *sql.DB
-// }
+type Store struct {
+	*Queries
+	db *sql.DB
+}
 
-// func NewStore(db *sql.DB) *Store {
-// 	return &Store{
-// 		db: db,
-// 	}
-// }
+func NewStore(db *sql.DB) *Store {
+	return &Store{
+		db: db,
+		Queries: New(db),
+	}
+} 
 
-// func (store *Store) execTx(ctx context.Context, fn func(*Queries) error) error {
-// 	tx, err := store.db.BeginTx(ctx, nil)
+func (store *Store) execTx(ctx context.Context, fn func(*Queries) error) error {
 
-// 	if err != nil {
-// 		return err
-// 	}
+	tx, err := store.db.BeginTx(ctx, nil)
 
-// 	q := New(tx)
+	if err != nil {
+		return err
+	}
+	
+	q := New(tx)
 
-// 	err = fn(q)
+	err = fn(q)
+	if err != nil {
+		if rbErr := tx.Rollback(); err != nil {
+			return fmt.Errorf("tx err: %v, rbErr: %v", rbErr, err)
+		}
 
-// 	if err != nil {
-// 		if rbErr := tx.Rollback(); rbErr != nil {
-// 			return fmt.Errorf("tx err %v, rb err %v", err, rbErr)
-// 		}
+		return err
+	}
 
-// 		return err
-// 	}
+	return tx.Commit()
+}
 
-// 	tx.Commit()
-// 	return nil
-// }
+type TransferTxParams struct {
+	FromAccountID int64 `json:"from_account_id"`
+	ToAccountID   int64 `json:"to_account_id"`
+	Amount        int64 `json:"amount"`
+}	
+
+type TranferTxResult struct {
+	Transfer Transfer   `json:"transfer"`
+	FromAccountID int64 `json:"from_account_id"`
+	ToAccountID   int64 `json:"to_account_id"`
+	FromEntry     Entry `json:"from_entry"`
+	ToEntry       Entry `json:"to_entry"`
+}	
+
+
+func (store *Store) TranferTx(ctx context.Context, arg TransferTxParams) (TranferTxResult, error) {
+
+	var result TranferTxResult
+
+	err := store.execTx(ctx, func(q *Queries) error {
+		var err error
+		result.Transfer, err = q.CreateTransfer(ctx, CreateTransferParams{
+			FromAccountID: arg.FromAccountID,
+			ToAccountID: arg.ToAccountID,
+			Amount: arg.Amount,
+		})
+
+		if err != nil {
+			return err
+		}
+		
+		result.FromEntry, err = q.CreateEntry(ctx, CreateEntryParams{
+			AccountID: arg.FromAccountID,
+			Amount: -arg.Amount,
+		})
+
+		if err != nil {
+			return err
+		}
+
+		result.ToEntry, err = q.CreateEntry(ctx, CreateEntryParams{
+			AccountID: arg.ToAccountID,
+			Amount: arg.Amount,
+		})
+
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	
+	return result, err
+}
